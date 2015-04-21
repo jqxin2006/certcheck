@@ -106,7 +106,8 @@ def try_one_score(test_url):
         return "none"
 
     #find whether there is clear cache, if yes, it means that the score is ready. 
-    for a in soup.findAll('a'):
+    for a in soup.findAll('a', href=True):
+
         if 'analyze.html' in a['href'] and 'clearCache' not in a['href']:
             result_urls.append("%s%s" % (base_url,a['href']))
         
