@@ -55,8 +55,12 @@ br.set_handle_refresh(mechanize._http.HTTPRefreshProcessor(), max_time=1)
 
 # User-Agent (this is cheating, ok?)
 br.addheaders = [('User-agent',
-                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:31.0)\
-    Gecko/20100101 Firefox/31.0')]
+                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:36.0)\
+    Gecko/20100101 Firefox/36.0'),
+                ('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'),
+                ('Accept-Language', 'en-US,en;q=0.5'),
+                ('Accept-Encoding','gzip, deflate'),
+                ('Connection','keep-alive')]
 
 
 def lookup(ip):
@@ -92,23 +96,38 @@ def try_one_score(test_url):
     result_urls = []
     base_url = "https://www.ssllabs.com/ssltest/"
     multiple_links = False
+    results  = []
 
     soup = BeautifulSoup(html)
     rating = soup.find_all("div", attrs={"class": re.compile("rating_")})
     # the score is the div with class as rating_r or rating_a
-    
-    if len(rating) == 0:
+
+    if (soup.find("a", text="Clear cache") is None):
         return "none"
 
-    if len(rating) == 1:
-        score = rating[0].text
-        score = score.strip()
-        issues = get_issues(html)
-        return (test_url, score, issues)
+    #find whether there is clear cache, if yes, it means that the score is ready. 
+    for a in soup.findAll('a'):
+        if 'analyze.html' in a['href'] and 'clearCache' not in a['href']:
+            result_urls.append("%s%s" % (base_url,a['href']))
+        
+    if (len(result_urls) > 0):
+        for the_url in result_urls:
+            results.append(get_one_score_issues(the_url))
+        return results
 
-def clear_cache(test_url):
+    results.append(get_one_score_issues(test_url))
+    return results 
+
+
+
+
+
+
+def get_one_score_issues(test_url):
     """
-    Try to clear the cache if the result is ready. 
+    Try to get the score, warnings and errors of the given domain
+    and IP address. If the result is ready, it returns a tuple
+    (score, issues). If the result is not ready, it returns "none"
     """
     r = br.open(test_url)
     html = r.read()
@@ -120,14 +139,47 @@ def clear_cache(test_url):
     rating = soup.find_all("div", attrs={"class": re.compile("rating_")})
     # the score is the div with class as rating_r or rating_a
     
-    if len(rating) == 0:
-        return True
-
-    # the score is ready
     if len(rating) == 1:
-        req = br.click_link(text='Clear cache')
-        br.open(req)
+        score = rating[0].text
+        score = score.strip()
+        issues = get_issues(html)
+        return (test_url, score, issues)
+
+    if len(rating) == 0:
+        score = "N"
+        issues = get_issues(html)
+        return (test_url, score, issues)
+
+
+    
+def clear_cache(test_url, domain):
+    """
+    Try to clear the cache if the result is ready. 
+    """
+    r = br.open(test_url)
+    html = r.read()
+    result_urls = []
+    base_url = "https://www.ssllabs.com/ssltest/"
+    
+    soup = BeautifulSoup(html)
+    #without link for "clear cache"
+    if (soup.find("a", text="Clear cache") is None):
+        return test_url
+
+    
+    req = br.click_link(text='Clear cache')
+    cj.clear_session_cookies()
+    r = br.open(req)
+    html = r.read()
+    soup = BeautifulSoup(html)
+    relative_refresh_link = soup.find("meta", {"http-equiv":"refresh"})['content'].split("url=")[1]
+    time.sleep(5)
+    for k in range(1,5):
+        refresh_link = "%s%s" % (base_url, relative_refresh_link)
+        br.open(refresh_link)
         time.sleep(5)
+        return refresh_link
+
     
 
 
@@ -138,10 +190,7 @@ def get_issues(html):
     """
     soup = BeautifulSoup(html)
     issues = []
-    # make sure that the response is valid with checking for score div
-    rating = soup.find_all("div", attrs={"class": re.compile("rating_")})
-    if len(rating) == 0:
-        return []
+    
     # all errors are divs with class=errorBox
     errors = soup.find_all("div", attrs={"class": "errorBox"})
     for error in errors:
@@ -151,12 +200,19 @@ def get_issues(html):
             pass
         else:
             # ignore the part following \r\n
-            issues.append(error.text.strip().split("\r\n")[0])
+            issues.append(error.text.strip().split("\r\n")[0].split(" MORE")[0])
     # all warnings are divs with class=warningBox
     warnings = soup.find_all("div", attrs={"class": "warningBox"})
     for warning in warnings:
         # ignore the part following \r\n
-        issues.append(warning.text.strip().split("\r\n")[0])
+        issues.append(warning.text.strip().split("\r\n")[0].split(" MORE")[0])
+
+    # all warnings are divs with id=warningBox
+    warnings = soup.find_all("div", attrs={"id": "warningBox"})
+    for warning in warnings:
+        # ignore the part following \r\n
+        issues.append(warning.text.strip().split("\r\n")[0].split(" MORE")[0])
+
     return issues
 
 
@@ -172,9 +228,9 @@ def get_score(test_url):
     # track the attempt
     attempt = 0
     # Try MAX_ATTEMPTS before giving up
-    MAX_ATTEMPTS = 10
+    MAX_ATTEMPTS = 36
     # the process sleep SLEEP_TIME seconds before trying again
-    SLEEP_TIME = 25
+    SLEEP_TIME = 10
     score = "none"
     score = try_one_score(test_url)
   
@@ -192,15 +248,10 @@ def get_scores(domain, ip):
     might be able to get more than one scores. 
 
     """
-    # first request to clear the cache
-    base_url = "https://www.ssllabs.com/ssltest/analyze.html?d=%s&hideResults=on&clearCache=on"
-    test_url = base_url % (domain)  
-    r = br.open(test_url)
-    html = r.read()
-
+ 
     # the second request to check the score 
-    base_url = "https://www.ssllabs.com/ssltest/analyze.html?d=%s&s=%s&hideResults=on&ignoreMismatch=on"
-    test_url = base_url % (domain, ip)  
+    base_url = "https://www.ssllabs.com/ssltest/analyze.html?d=%s&hideResults=on&ignoreMismatch=on"
+    test_url = base_url % (domain)  
 
     r = br.open(test_url)
     html = r.read()
@@ -215,30 +266,20 @@ def get_scores(domain, ip):
 
     rating = soup.find_all("div", attrs={"class": re.compile("rating_")})
     # the score is the div with class as rating_r or rating_a
-    
     if len(rating) > 0:
-        clear_cache(test_url)
-        score = get_score(test_url)
-        results.append(score)
+        new_link = clear_cache(test_url, domain)
+        results = get_score(new_link)
         return results
+
 
     # Still working on the testing
     if re.search("Please wait\.\.\.", html) is not None:
-        score = get_score(test_url)
-        results.append(score)
+        results = get_score(test_url)
         return results
 
-    for a in soup.findAll('a'):
-        if 'analyze.html' in a['href'] and 'clearCache' not in a['href']:
-            result_urls.append("%s%s" % (base_url,a['href']))
-            multiple_links = True
-    print result_urls
-
-    if multiple_links is True:
-        for the_url in result_urls:
-            clear_cache(the_url)
-            score = get_score(the_url)
-            results.append(score)
+    new_link = clear_cache(test_url, domain)
+    results = get_score(new_link)
+    
     return results
 
 
