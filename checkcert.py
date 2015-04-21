@@ -16,7 +16,8 @@ from struct import *
 from datetime import datetime
 from json import dumps
 import requests
-import sys 
+import sys
+from urlparse import urlparse
 
 # need to pass a url 
 if (len(sys.argv) != 2):
@@ -27,6 +28,9 @@ if (len(sys.argv) != 2):
         identified.
     """
     sys.exit(-1)
+else:
+    target_url = sys.argv[1]
+
 # Browser
 br = mechanize.Browser()
 
@@ -77,30 +81,54 @@ def lookup(ip):
     return False
 
 
-def try_one_score(domain, ip):
+def try_one_score(test_url):
     """
     Try to get the score, warnings and errors of the given domain
     and IP address. If the result is ready, it returns a tuple
     (score, issues). If the result is not ready, it returns "none"
     """
-    base_url = "https://www.ssllabs.com/ssltest/analyze.html?d=%s&s=%s&hideResults=on&ignoreMismatch=on"
-    test_url = base_url % (domain, ip)
-    print test_url
-
-
     r = br.open(test_url)
     html = r.read()
+    result_urls = []
+    base_url = "https://www.ssllabs.com/ssltest/"
+    multiple_links = False
 
     soup = BeautifulSoup(html)
     rating = soup.find_all("div", attrs={"class": re.compile("rating_")})
     # the score is the div with class as rating_r or rating_a
+    
     if len(rating) == 0:
         return "none"
+
     if len(rating) == 1:
         score = rating[0].text
         score = score.strip()
         issues = get_issues(html)
-        return (score, issues)
+        return (test_url, score, issues)
+
+def clear_cache(test_url):
+    """
+    Try to clear the cache if the result is ready. 
+    """
+    r = br.open(test_url)
+    html = r.read()
+    result_urls = []
+    base_url = "https://www.ssllabs.com/ssltest/"
+    multiple_links = False
+
+    soup = BeautifulSoup(html)
+    rating = soup.find_all("div", attrs={"class": re.compile("rating_")})
+    # the score is the div with class as rating_r or rating_a
+    
+    if len(rating) == 0:
+        return True
+
+    # the score is ready
+    if len(rating) == 1:
+        req = br.click_link(text='Clear cache')
+        br.open(req)
+        time.sleep(5)
+    
 
 
 def get_issues(html):
@@ -132,7 +160,7 @@ def get_issues(html):
     return issues
 
 
-def get_score(domain, ip):
+def get_score(test_url):
     """
     This function get the score for given domain and IP. It keeps
     query the URL until the valid response is ready. If the response
@@ -148,18 +176,73 @@ def get_score(domain, ip):
     # the process sleep SLEEP_TIME seconds before trying again
     SLEEP_TIME = 25
     score = "none"
-    # try once
-    score = try_one_score(domain, ip)
+    score = try_one_score(test_url)
+  
     while score == "none":
         attempt += 1
         time.sleep(SLEEP_TIME)
-        score = try_one_score(domain, ip)
+        score = try_one_score(test_url)
         if attempt > MAX_ATTEMPTS:
             break
     return score
 
+def get_scores(domain, ip):
+    """
+    This function get the scores for given domain and IP. Sometimes, it
+    might be able to get more than one scores. 
 
-def get_public_cert_score(domain):
+    """
+    # first request to clear the cache
+    base_url = "https://www.ssllabs.com/ssltest/analyze.html?d=%s&hideResults=on&clearCache=on"
+    test_url = base_url % (domain)  
+    r = br.open(test_url)
+    html = r.read()
+
+    # the second request to check the score 
+    base_url = "https://www.ssllabs.com/ssltest/analyze.html?d=%s&s=%s&hideResults=on&ignoreMismatch=on"
+    test_url = base_url % (domain, ip)  
+
+    r = br.open(test_url)
+    html = r.read()
+
+    results = []
+    result_urls = []
+    base_url = "https://www.ssllabs.com/ssltest/"
+    multiple_links = False
+
+    soup = BeautifulSoup(html)
+
+
+    rating = soup.find_all("div", attrs={"class": re.compile("rating_")})
+    # the score is the div with class as rating_r or rating_a
+    
+    if len(rating) > 0:
+        clear_cache(test_url)
+        score = get_score(test_url)
+        results.append(score)
+        return results
+
+    # Still working on the testing
+    if re.search("Please wait\.\.\.", html) is not None:
+        score = get_score(test_url)
+        results.append(score)
+        return results
+
+    for a in soup.findAll('a'):
+        if 'analyze.html' in a['href'] and 'clearCache' not in a['href']:
+            result_urls.append("%s%s" % (base_url,a['href']))
+            multiple_links = True
+    print result_urls
+
+    if multiple_links is True:
+        for the_url in result_urls:
+            clear_cache(the_url)
+            score = get_score(the_url)
+            results.append(score)
+    return results
+
+
+def get_public_cert_score(the_url):
     """
     This function should be used to get the certificate score
     and issues by given public domain. It returns {} for private
@@ -167,73 +250,23 @@ def get_public_cert_score(domain):
     other information for successful result.
     """
     result = {}
+    #pare url to get the domain 
+    parsed_uri = urlparse(the_url)
+    domain = '{uri.netloc}'.format(uri=parsed_uri)
+    
     try:
         ip = socket.gethostbyname(domain)
     except:
         #in case the domain can not be resloved, return {}
         return result
+       
     #only check for public IP
     if lookup(ip) is False:
-        result["domain"] = domain
-        result["ip"] = ip
-        print get_score(domain, ip)
-        (score, issues) = get_score(domain, ip)
-        result["score"] = score
-        result["issues"] = issues
-        result["update_date"] = str(datetime.today().strftime("%Y/%m/%d"))
+        score_issues = get_scores(domain, ip)
     else:
         pass
-    return result
+    return score_issues
 
 
-def get_public_domains(file_name):
-    """
-    This function returns a list of public domains from a file.
-    """
-    public_domains = []
-    # read domains from the file
-    with open(file_name, "r") as f:
-        lines = f.readlines()
+print dumps(get_public_cert_score(target_url))
 
-    for line in lines:
-        domain = line.strip()
-        # ignore IP addresses
-        if re.search('[a-zA-Z]+', domain) is None:
-            continue
-        try:
-            ip = socket.gethostbyname(domain)
-            if lookup(ip) is True:
-                continue
-            public_domains.append(domain)
-        except:
-            continue
-    return public_domains
-
-
-def pump_one_record(payload):
-    """
-    This function pumps one record into our control panel.
-    """
-    url = "http://a-staging.rakr.net/v1/security/certificates"
-    resp = requests.post(url, data=payload)
-    print resp.status_code
-
-
-def pump_records(file_name):
-    """
-    This function reads the content from the file_name, then
-    it get the score and security issues for all public domains by
-    using function get_public_cert_score.
-    """
-    the_public_domains = get_public_domains(file_name)
-    for domain in the_public_domains:
-        print domain
-        result = get_public_cert_score(domain)
-        if len(result) > 0:
-            pump_one_record(dumps(result))
-            print dumps(result)
-
-#print dumps(get_public_cert_score("rackspace.com"))
-
-the_file_name = "/home/mxin/the_domains.txt"
-pump_records(the_file_name)
