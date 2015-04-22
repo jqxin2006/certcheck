@@ -59,7 +59,6 @@ br.addheaders = [('User-agent',
     Gecko/20100101 Firefox/36.0'),
                 ('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'),
                 ('Accept-Language', 'en-US,en;q=0.5'),
-                ('Accept-Encoding','gzip, deflate'),
                 ('Connection','keep-alive')]
 
 
@@ -120,10 +119,6 @@ def try_one_score(test_url):
     return results 
 
 
-
-
-
-
 def get_one_score_issues(test_url):
     """
     Try to get the score, warnings and errors of the given domain
@@ -150,8 +145,6 @@ def get_one_score_issues(test_url):
         score = "N"
         issues = get_issues(html)
         return (test_url, score, issues)
-
-
     
 def clear_cache(test_url, domain):
     """
@@ -163,15 +156,17 @@ def clear_cache(test_url, domain):
     base_url = "https://www.ssllabs.com/ssltest/"
     
     soup = BeautifulSoup(html)
+
     #without link for "clear cache"
     if (soup.find("a", text="Clear cache") is None):
         return test_url
 
     
     req = br.click_link(text='Clear cache')
-    cj.clear_session_cookies()
     r = br.open(req)
     html = r.read()
+    time.sleep(2)
+
     soup = BeautifulSoup(html)
     relative_refresh_link = soup.find("meta", {"http-equiv":"refresh"})['content'].split("url=")[1]
     time.sleep(5)
@@ -249,7 +244,7 @@ def get_scores(domain, ip):
     might be able to get more than one scores. 
 
     """
- 
+    
     # the second request to check the score 
     base_url = "https://www.ssllabs.com/ssltest/analyze.html?d=%s&hideResults=on&ignoreMismatch=on"
     test_url = base_url % (domain)  
